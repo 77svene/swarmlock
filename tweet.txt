@@ -1,0 +1,7 @@
+Just shipped SwarmLock: State-Weighted Agent Consensus for Microsoft AI Agents Hackathon | Multi-Agent Systems | $50K+!
+
+Transactions require dynamic consensus from a quorum of autonomous agents based on their real-time capability state, not static multi-sig keys.
+
+https://github.com/77svene/swarmlock
+
+#hackathon #AI #Web3 #DeFi @lablabai

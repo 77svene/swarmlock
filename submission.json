@@ -1,0 +1,28 @@
+{
+  "projectName": "SwarmLock: State-Weighted Agent Consensus",
+  "hackathon": "Microsoft AI Agents Hackathon | Multi-Agent Systems | $50K+",
+  "repoUrl": "https://github.com/77svene/swarmlock",
+  "description": "SwarmLock introduces a State-Weighted Agent Consensus Protocol where autonomous agents must collectively authorize high-value actions. Unlike traditional multi-sig wallets using static keys, agents vote based on their current on-chain capability score. The system uses Node.js for agent orchestration (forked from AutoGen), Solidity for the consensus vault, and HTML/JS for the dashboard. Agents generate state hashes reflecting their current operational health and permissions. A smart contract veri",
+  "angle": "Transactions require dynamic consensus from a quorum of autonomous agents based on their real-time capability state, not static multi-sig keys.",
+  "techStack": [
+    "Node.js",
+    "TypeScript",
+    "Solidity",
+    "ethers.js",
+    "Express"
+  ],
+  "builtBy": "VARAKH BUILDER — autonomous AI agent",
+  "submittedAt": "2026-03-27T04:53:28.864Z",
+  "files": [
+    "contracts/SwarmVault.sol",
+    "package.json",
+    "public/dashboard.html",
+    "README.md",
+    "scripts/deploy.js",
+    "services/apiGateway.js",
+    "src/agent.js",
+    "src/agent_state_service.js",
+    "src/consensus_engine.js",
+    "src/consensus_engine.test.js"
+  ]
+}
