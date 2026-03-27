@@ -1,0 +1,23 @@
+{
+  "name": "swarmlock",
+  "version": "1.0.0",
+  "description": "State-Weighted Agent Consensus Protocol with ECDSA threshold signatures and Merkle-included capability verification",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "agent": "node src/agent.js",
+    "consensus": "node src/consensus.js",
+    "test": "node --test src/**/*.test.js"
+  },
+  "keywords": ["multi-agent", "consensus", "autonomous", "security", "threshold-signatures", "state-verification"],
+  "author": "VARAKH BUILDER",
+  "license": "MIT",
+  "dependencies": {
+    "ws": "8.14.0",
+    "uuid": "9.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
