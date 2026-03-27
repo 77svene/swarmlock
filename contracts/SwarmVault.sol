@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
-pragma ^0.8.24;
+pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
 
 /**
  * SwarmVault.sol - State-Weighted Agent Consensus Protocol
@@ -20,8 +21,9 @@ import "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
  * - State hash binding to prevent replay attacks
  * - Nonce-based intent deduplication
  * - Dynamic capability-weighted voting power
+ * - Time-locked state verification windows
  */
-contract SwarmVault is ReentrancyGuard {
+contract SwarmVault is ReentrancyGuard, Ownable {
     
     using ECDSA for bytes32;
     using MessageHashUtils for bytes32;
@@ -35,215 +37,331 @@ contract SwarmVault is ReentrancyGuard {
         uint64 lastStateTimestamp;
         bool isActive;
         uint256 registeredAt;
+        uint256 lastStateUpdate;
     }
     
     struct Vote {
-        bytes32 intentHash;
         address agent;
+        bytes32 intentHash;
         uint256 timestamp;
-        bool signed;
+        bool hasVoted;
+        uint8 signatureVersion;
     }
     
     struct Intent {
         bytes32 intentHash;
-        address target;
-        bytes data;
-        uint256 requiredQuorum;
-        uint256 totalWeight;
+        address targetContract;
+        bytes functionData;
+        uint256 value;
+        uint256 requiredWeight;
         uint256 currentWeight;
-        bool executed;
         uint256 createdAt;
-        uint256 nonce;
+        uint256 expiresAt;
+        bool executed;
+        bool cancelled;
+        uint256 voteCount;
+        uint256 totalWeight;
     }
+    
+    // === STATE MANAGEMENT ===
+    struct StateCommitment {
+        bytes32 stateHash;
+        uint256 timestamp;
+        uint256 blockNumber;
+        bool verified;
+    }
+    
+    // === CONSTANTS ===
+    uint256 public constant MAX_CAPABILITY_SCORE = 10000;
+    uint256 public constant MIN_QUORUM_PERCENTAGE = 51; // 51% of total capability
+    uint256 public constant STATE_VALIDITY_WINDOW = 300; // 5 minutes
+    uint256 public constant MAX_AGENTS = 100;
+    uint256 public constant MIN_AGENTS_FOR_CONSENSUS = 3;
+    uint256 public constant SIGNATURE_EXPIRY_SECONDS = 300;
     
     // === STATE STORAGE ===
     mapping(address => Agent) public agents;
     EnumerableSet.AddressSet private agentSet;
     mapping(bytes32 => Intent) public intents;
     mapping(bytes32 => mapping(address => Vote)) public votes;
-    mapping(bytes32 => uint256) public intentNonces;
+    mapping(address => mapping(bytes32 => uint256)) public agentNonces;
+    mapping(bytes32 => StateCommitment) public stateCommitments;
+    mapping(bytes32 => bool) public intentExecuted;
+    mapping(bytes32 => bool) public intentCancelled;
     
-    // === CONFIGURATION ===
-    uint256 public constant MAX_CAPABILITY = 10000;
-    uint256 public constant MIN_QUORUM_PERCENTAGE = 51;
-    uint256 public stateValidityWindow = 300; // 5 minutes in seconds
-    uint256 public quorumPercentage = 51;
+    // === GLOBAL STATE ===
+    uint256 public totalCapabilityWeight;
+    uint256 public activeAgentCount;
+    uint256 public intentCounter;
+    uint256 public stateVersion;
     
     // === EVENTS ===
-    event AgentRegistered(address indexed agent, uint128 capabilityScore, uint256 stateHash);
-    event AgentStateUpdated(address indexed agent, uint256 stateHash, uint128 capabilityScore);
-    event VoteSubmitted(bytes32 indexed intentHash, address indexed agent, uint256 weight);
-    event IntentExecuted(bytes32 indexed intentHash, address indexed target, uint256 weight);
-    event QuorumPercentageUpdated(uint256 newPercentage);
-    event StateValidityWindowUpdated(uint256 newWindow);
+    event AgentRegistered(address indexed agent, uint128 capabilityScore);
+    event AgentStateUpdated(address indexed agent, bytes32 stateHash, uint256 timestamp);
+    event IntentCreated(bytes32 indexed intentHash, address indexed creator, uint256 requiredWeight);
+    event VoteCast(bytes32 indexed intentHash, address indexed agent, uint128 weight);
+    event IntentExecuted(bytes32 indexed intentHash, address indexed executor);
+    event IntentCancelled(bytes32 indexed intentHash, address indexed canceller);
+    event StateCommitmentVerified(bytes32 indexed stateHash, uint256 timestamp);
+    event QuorumReached(bytes32 indexed intentHash, uint256 currentWeight, uint256 requiredWeight);
+    
+    // === MODIFIERS ===
+    modifier onlyActiveAgent() {
+        require(agents[msg.sender].isActive, "SwarmVault: Not an active agent");
+        _;
+    }
+    
+    modifier validStateHash(bytes32 stateHash) {
+        require(stateCommitments[stateHash].verified, "SwarmVault: State hash not verified");
+        require(block.timestamp <= stateCommitments[stateHash].timestamp + STATE_VALIDITY_WINDOW, "SwarmVault: State hash expired");
+        _;
+    }
+    
+    modifier uniqueIntent(bytes32 intentHash) {
+        require(!intentExecuted[intentHash], "SwarmVault: Intent already executed");
+        require(!intentCancelled[intentHash], "SwarmVault: Intent already cancelled");
+        _;
+    }
+    
+    modifier validSignature(bytes32 intentHash, address agent, bytes memory signature) {
+        bytes32 messageHash = getMessageHash(intentHash, agent);
+        address recovered = messageHash.recover(signature);
+        require(recovered == agent, "SwarmVault: Invalid signature");
+        _;
+    }
     
     // === CONSTRUCTOR ===
-    constructor() {
-        quorumPercentage = MIN_QUORUM_PERCENTAGE;
+    constructor() Ownable(msg.sender) {
+        intentCounter = 0;
+        stateVersion = 0;
+        totalCapabilityWeight = 0;
+        activeAgentCount = 0;
     }
     
     // === AGENT REGISTRATION ===
-    function registerAgent(
-        address _publicKey,
-        uint128 _capabilityScore,
-        uint256 _stateHash
-    ) external {
-        require(_publicKey != address(0), "INVALID_ADDRESS");
-        require(_capabilityScore <= MAX_CAPABILITY, "CAPABILITY_EXCEEDED");
-        require(!agents[_publicKey].isActive, "AGENT_EXISTS");
+    function registerAgent(address publicKey, uint128 capabilityScore) external onlyOwner {
+        require(capabilityScore <= MAX_CAPABILITY_SCORE, "SwarmVault: Capability score exceeds maximum");
+        require(agentSet.length() < MAX_AGENTS, "SwarmVault: Maximum agents reached");
+        require(publicKey != address(0), "SwarmVault: Invalid public key");
         
-        Agent storage agent = agents[_publicKey];
-        agent.publicKey = _publicKey;
-        agent.capabilityScore = _capabilityScore;
-        agent.stateHash = _stateHash;
-        agent.lastStateTimestamp = uint64(block.timestamp);
+        Agent storage agent = agents[publicKey];
+        require(!agent.isActive, "SwarmVault: Agent already registered");
+        
+        agent.publicKey = publicKey;
+        agent.capabilityScore = capabilityScore;
+        agent.stateHash = 0;
+        agent.lastStateTimestamp = 0;
         agent.isActive = true;
         agent.registeredAt = block.timestamp;
+        agent.lastStateUpdate = block.timestamp;
         
-        agentSet.add(_publicKey);
+        agentSet.add(publicKey);
+        totalCapabilityWeight += capabilityScore;
+        activeAgentCount++;
         
-        emit AgentRegistered(_publicKey, _capabilityScore, _stateHash);
+        emit AgentRegistered(publicKey, capabilityScore);
     }
     
-    // === AGENT STATE UPDATE ===
-    function updateAgentState(
-        address _agent,
-        uint256 _stateHash,
-        uint128 _capabilityScore
-    ) external {
-        require(agents[_agent].isActive, "AGENT_NOT_ACTIVE");
-        require(_capabilityScore <= MAX_CAPABILITY, "CAPABILITY_EXCEEDED");
+    function unregisterAgent(address agentAddress) external onlyOwner {
+        require(agents[agentAddress].isActive, "SwarmVault: Agent not active");
         
-        Agent storage agent = agents[_agent];
-        require(
-            block.timestamp - agent.lastStateTimestamp <= stateValidityWindow,
-            "STATE_EXPIRED"
-        );
-        
-        agent.stateHash = _stateHash;
-        agent.capabilityScore = _capabilityScore;
-        agent.lastStateTimestamp = uint64(block.timestamp);
-        
-        emit AgentStateUpdated(_agent, _stateHash, _capabilityScore);
+        Agent storage agent = agents[agentAddress];
+        agent.isActive = false;
+        agentSet.remove(agentAddress);
+        totalCapabilityWeight -= agent.capabilityScore;
+        activeAgentCount--;
     }
     
-    // === SUBMIT VOTE ===
-    function submitVote(
-        bytes32 _intentHash,
-        address _agent,
-        bytes calldata _signature
-    ) external nonReentrant {
-        require(agents[_agent].isActive, "AGENT_NOT_ACTIVE");
-        require(votes[_intentHash][_agent].timestamp == 0, "VOTE_ALREADY_SUBMITTED");
+    // === STATE MANAGEMENT ===
+    function submitStateHash(bytes32 stateHash, uint64 timestamp) external onlyActiveAgent {
+        Agent storage agent = agents[msg.sender];
         
-        bytes32 messageHash = keccak256(abi.encodePacked(_intentHash, block.timestamp));
-        address signer = messageHash.recover(_signature);
+        require(timestamp > agent.lastStateTimestamp, "SwarmVault: Timestamp not newer");
+        require(timestamp + STATE_VALIDITY_WINDOW >= block.timestamp, "SwarmVault: State timestamp expired");
         
-        require(signer == _agent, "INVALID_SIGNATURE");
+        agent.stateHash = uint256(stateHash);
+        agent.lastStateTimestamp = timestamp;
+        agent.lastStateUpdate = block.timestamp;
         
-        uint256 agentWeight = agents[_agent].capabilityScore;
-        votes[_intentHash][_agent] = Vote({
-            intentHash: _intentHash,
-            agent: _agent,
-            timestamp: block.timestamp,
-            signed: true
+        // Create state commitment for verification
+        stateCommitments[stateHash] = StateCommitment({
+            stateHash: stateHash,
+            timestamp: timestamp,
+            blockNumber: block.number,
+            verified: true
         });
         
-        intents[_intentHash].currentWeight += agentWeight;
-        
-        emit VoteSubmitted(_intentHash, _agent, agentWeight);
+        emit AgentStateUpdated(msg.sender, stateHash, timestamp);
     }
     
-    // === EXECUTE INTENT ===
-    function executeIntent(
-        bytes32 _intentHash,
-        address _target,
-        bytes calldata _data,
-        uint256 _requiredQuorum
-    ) external nonReentrant {
-        require(intents[_intentHash].createdAt == 0, "INTENT_EXISTS");
-        
-        uint256 totalWeight = _calculateTotalWeight();
-        uint256 requiredWeight = (totalWeight * _requiredQuorum) / 100;
-        
-        require(
-            intents[_intentHash].currentWeight >= requiredWeight,
-            "QUORUM_NOT_MET"
-        );
-        
-        intents[_intentHash] = Intent({
-            intentHash: _intentHash,
-            target: _target,
-            data: _data,
-            requiredQuorum: _requiredQuorum,
-            totalWeight: totalWeight,
-            currentWeight: intents[_intentHash].currentWeight,
-            executed: true,
-            createdAt: block.timestamp,
-            nonce: intentNonces[_intentHash]
-        });
-        
-        intentNonces[_intentHash]++;
-        
-        (bool success, ) = _target.call(_data);
-        require(success, "CALL_FAILED");
-        
-        emit IntentExecuted(_intentHash, _target, intents[_intentHash].currentWeight);
+    function verifyStateHash(bytes32 stateHash) external view returns (bool) {
+        StateCommitment memory commitment = stateCommitments[stateHash];
+        return commitment.verified && 
+               block.timestamp <= commitment.timestamp + STATE_VALIDITY_WINDOW;
     }
     
-    // === CREATE INTENT ===
+    // === INTENT CREATION ===
     function createIntent(
-        address _target,
-        bytes calldata _data,
-        uint256 _requiredQuorum
+        address targetContract,
+        bytes memory functionData,
+        uint256 value,
+        uint256 requiredWeight
     ) external returns (bytes32) {
-        bytes32 intentHash = keccak256(abi.encodePacked(
-            _target,
-            _data,
-            block.timestamp,
-            _requiredQuorum,
-            intentNonces[_target]
-        ));
+        require(requiredWeight > 0, "SwarmVault: Required weight must be positive");
+        require(requiredWeight <= totalCapabilityWeight, "SwarmVault: Required weight exceeds total capability");
+        require(targetContract != address(0), "SwarmVault: Invalid target contract");
         
-        require(intents[intentHash].createdAt == 0, "INTENT_EXISTS");
+        bytes32 intentHash = keccak256(
+            abi.encodePacked(
+                targetContract,
+                functionData,
+                value,
+                requiredWeight,
+                block.timestamp,
+                msg.sender
+            )
+        );
         
-        intents[intentHash] = Intent({
-            intentHash: intentHash,
-            target: _target,
-            data: _data,
-            requiredQuorum: _requiredQuorum,
-            totalWeight: 0,
-            currentWeight: 0,
-            executed: false,
-            createdAt: block.timestamp,
-            nonce: intentNonces[intentHash]
-        });
+        require(!intentExecuted[intentHash], "SwarmVault: Intent already exists");
         
-        intentNonces[intentHash]++;
+        Intent storage intent = intents[intentHash];
+        intent.intentHash = intentHash;
+        intent.targetContract = targetContract;
+        intent.functionData = functionData;
+        intent.value = value;
+        intent.requiredWeight = requiredWeight;
+        intent.currentWeight = 0;
+        intent.createdAt = block.timestamp;
+        intent.expiresAt = block.timestamp + SIGNATURE_EXPIRY_SECONDS;
+        intent.executed = false;
+        intent.cancelled = false;
+        intent.voteCount = 0;
+        intent.totalWeight = totalCapabilityWeight;
+        
+        intentCounter++;
+        
+        emit IntentCreated(intentHash, msg.sender, requiredWeight);
         
         return intentHash;
     }
     
-    // === CALCULATE TOTAL WEIGHT ===
-    function _calculateTotalWeight() internal view returns (uint256) {
-        uint256 totalWeight = 0;
-        address[] memory agentsArray = new address[](agentSet.length());
+    // === VOTING MECHANISM ===
+    function castVote(
+        bytes32 intentHash,
+        bytes memory signature
+    ) external onlyActiveAgent uniqueIntent(intentHash) {
+        Intent storage intent = intents[intentHash];
+        Agent storage agent = agents[msg.sender];
         
-        for (uint256 i = 0; i < agentSet.length(); i++) {
-            agentsArray[i] = agentSet.at(i);
-            totalWeight += agents[agentsArray[i]].capabilityScore;
+        require(block.timestamp < intent.expiresAt, "SwarmVault: Intent expired");
+        require(!votes[intentHash][msg.sender].hasVoted, "SwarmVault: Agent already voted");
+        
+        // Verify signature
+        bytes32 messageHash = getMessageHash(intentHash, msg.sender);
+        address recovered = messageHash.recover(signature);
+        require(recovered == msg.sender, "SwarmVault: Invalid signature");
+        
+        // Check agent nonce to prevent replay
+        require(agentNonces[msg.sender][intentHash] == 0, "SwarmVault: Replay attack detected");
+        agentNonces[msg.sender][intentHash] = block.timestamp;
+        
+        // Record vote
+        votes[intentHash][msg.sender] = Vote({
+            agent: msg.sender,
+            intentHash: intentHash,
+            timestamp: block.timestamp,
+            hasVoted: true,
+            signatureVersion: 1
+        });
+        
+        // Update intent weight
+        intent.currentWeight += agent.capabilityScore;
+        intent.voteCount++;
+        
+        emit VoteCast(intentHash, msg.sender, agent.capabilityScore);
+        
+        // Check if quorum reached
+        if (intent.currentWeight >= intent.requiredWeight) {
+            emit QuorumReached(intentHash, intent.currentWeight, intent.requiredWeight);
         }
-        
-        return totalWeight;
     }
     
-    // === GET AGENT COUNT ===
+    // === INTENT EXECUTION ===
+    function executeIntent(bytes32 intentHash) external onlyActiveAgent uniqueIntent(intentHash) {
+        Intent storage intent = intents[intentHash];
+        Agent storage agent = agents[msg.sender];
+        
+        require(block.timestamp < intent.expiresAt, "SwarmVault: Intent expired");
+        require(intent.currentWeight >= intent.requiredWeight, "SwarmVault: Quorum not reached");
+        require(!intent.executed, "SwarmVault: Intent already executed");
+        
+        // Verify all required votes are present
+        require(intent.voteCount >= MIN_AGENTS_FOR_CONSENSUS, "SwarmVault: Minimum agents not met");
+        
+        // Execute the intent
+        intent.executed = true;
+        intentExecuted[intentHash] = true;
+        
+        (bool success, ) = intent.targetContract.call{value: intent.value}(intent.functionData);
+        require(success, "SwarmVault: Intent execution failed");
+        
+        emit IntentExecuted(intentHash, msg.sender);
+    }
+    
+    // === INTENT CANCELLATION ===
+    function cancelIntent(bytes32 intentHash) external {
+        Intent storage intent = intents[intentHash];
+        
+        require(!intent.executed, "SwarmVault: Intent already executed");
+        require(!intent.cancelled, "SwarmVault: Intent already cancelled");
+        require(block.timestamp < intent.expiresAt, "SwarmVault: Intent expired");
+        
+        intent.cancelled = true;
+        intentCancelled[intentHash] = true;
+        
+        emit IntentCancelled(intentHash, msg.sender);
+    }
+    
+    // === STATE VERIFICATION ===
+    function verifyAgentState(address agentAddress, bytes32 stateHash) external view returns (bool) {
+        Agent storage agent = agents[agentAddress];
+        require(agent.isActive, "SwarmVault: Agent not active");
+        return agent.stateHash == uint256(stateHash);
+    }
+    
+    function getAgentCapability(address agentAddress) external view returns (uint128) {
+        Agent storage agent = agents[agentAddress];
+        require(agent.isActive, "SwarmVault: Agent not active");
+        return agent.capabilityScore;
+    }
+    
+    function getQuorumStatus(bytes32 intentHash) external view returns (
+        uint256 currentWeight,
+        uint256 requiredWeight,
+        uint256 voteCount,
+        bool quorumReached
+    ) {
+        Intent storage intent = intents[intentHash];
+        currentWeight = intent.currentWeight;
+        requiredWeight = intent.requiredWeight;
+        voteCount = intent.voteCount;
+        quorumReached = currentWeight >= requiredWeight;
+    }
+    
+    // === UTILITY FUNCTIONS ===
     function getAgentCount() external view returns (uint256) {
         return agentSet.length();
     }
     
-    // === GET AGENT INFO ===
-    function getAgentInfo(address _agent) external view returns (
+    function getTotalCapability() external view returns (uint256) {
+        return totalCapabilityWeight;
+    }
+    
+    function getActiveAgentCount() external view returns (uint256) {
+        return activeAgentCount;
+    }
+    
+    function getAgent(address agentAddress) external view returns (
         address publicKey,
         uint128 capabilityScore,
         uint256 stateHash,
@@ -251,7 +369,7 @@ contract SwarmVault is ReentrancyGuard {
         bool isActive,
         uint256 registeredAt
     ) {
-        Agent memory agent = agents[_agent];
+        Agent storage agent = agents[agentAddress];
         return (
             agent.publicKey,
             agent.capabilityScore,
@@ -262,68 +380,78 @@ contract SwarmVault is ReentrancyGuard {
         );
     }
     
-    // === GET INTENT INFO ===
-    function getIntentInfo(bytes32 _intentHash) external view returns (
-        address target,
-        bytes data,
-        uint256 requiredQuorum,
-        uint256 totalWeight,
-        uint256 currentWeight,
-        bool executed,
-        uint256 createdAt,
-        uint256 nonce
-    ) {
-        Intent memory intent = intents[_intentHash];
-        return (
-            intent.target,
-            intent.data,
-            intent.requiredQuorum,
-            intent.totalWeight,
-            intent.currentWeight,
-            intent.executed,
-            intent.createdAt,
-            intent.nonce
+    // === MESSAGE HASHING FOR SIGNATURES ===
+    function getMessageHash(bytes32 intentHash, address agent) public pure returns (bytes32) {
+        return keccak256(
+            abi.encodePacked(
+                "\x19Ethereum Signed Message:\n32",
+                intentHash,
+                agent
+            )
         );
     }
     
-    // === UPDATE QUORUM PERCENTAGE ===
-    function updateQuorumPercentage(uint256 _newPercentage) external {
-        require(_newPercentage >= MIN_QUORUM_PERCENTAGE, "QUORUM_TOO_LOW");
-        require(_newPercentage <= 100, "QUORUM_TOO_HIGH");
+    // === EMERGENCY FUNCTIONS ===
+    function emergencyPause(bytes32 intentHash) external onlyOwner {
+        Intent storage intent = intents[intentHash];
+        require(!intent.executed, "SwarmVault: Intent already executed");
+        intent.cancelled = true;
+        intentCancelled[intentHash] = true;
+        emit IntentCancelled(intentHash, msg.sender);
+    }
+    
+    function emergencyUnpause(bytes32 intentHash) external onlyOwner {
+        Intent storage intent = intents[intentHash];
+        require(intent.cancelled, "SwarmVault: Intent not cancelled");
+        intent.cancelled = false;
+        intentCancelled[intentHash] = false;
+    }
+    
+    // === VIEW FUNCTIONS FOR DASHBOARD ===
+    function getPendingIntents() external view returns (bytes32[] memory) {
+        uint256 count = 0;
+        for (uint256 i = 0; i < intentCounter; i++) {
+            bytes32 intentHash = keccak256(abi.encodePacked(i));
+            if (!intents[intentHash].executed && !intents[intentHash].cancelled) {
+                count++;
+            }
+        }
         
-        quorumPercentage = _newPercentage;
-        emit QuorumPercentageUpdated(_newPercentage);
-    }
-    
-    // === UPDATE STATE VALIDITY WINDOW ===
-    function updateStateValidityWindow(uint256 _newWindow) external {
-        require(_newWindow > 0, "WINDOW_ZERO");
+        bytes32[] memory pending = new bytes32[](count);
+        uint256 index = 0;
+        for (uint256 i = 0; i < intentCounter; i++) {
+            bytes32 intentHash = keccak256(abi.encodePacked(i));
+            if (!intents[intentHash].executed && !intents[intentHash].cancelled) {
+                pending[index] = intentHash;
+                index++;
+            }
+        }
         
-        stateValidityWindow = _newWindow;
-        emit StateValidityWindowUpdated(_newWindow);
+        return pending;
     }
     
-    // === GET CURRENT QUORUM ===
-    function getCurrentQuorum() external view returns (uint256) {
-        return quorumPercentage;
-    }
-    
-    // === GET STATE VALIDITY WINDOW ===
-    function getStateValidityWindow() external view returns (uint256) {
-        return stateValidityWindow;
-    }
-    
-    // === GET VOTE INFO ===
-    function getVoteInfo(
-        bytes32 _intentHash,
-        address _agent
-    ) external view returns (
-        bytes32 intentHash,
-        address agent,
-        uint256 timestamp,
-        bool signed
-    ) {
-        Vote memory vote = votes[_intentHash][_agent];
-        return (vote.intentHash, vote.agent, vote.timestamp, vote.signed);
+    function getAgentVotes(bytes32 intentHash) external view returns (address[] memory, uint128[] memory) {
+        uint256 count = 0;
+        for (uint256 i = 0; i < agentSet.length(); i++) {
+            address agent = agentSet.at(i);
+            if (votes[intentHash][agent].hasVoted) {
+                count++;
+            }
+        }
+        
+        address[] memory voters = new address[](count);
+        uint128[] memory weights = new uint128[](count);
+        uint256 index = 0;
+        
+        for (uint256 i = 0; i < agentSet.length(); i++) {
+            address agent = agentSet.at(i);
+            if (votes[intentHash][agent].hasVoted) {
+                voters[index] = agent;
+                weights[index] = agents[agent].capabilityScore;
+                index++;
+            }
+        }
+        
+        return (voters, weights);
     }
 }
