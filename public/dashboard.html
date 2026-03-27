@@ -1,0 +1,812 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SwarmLock | State-Weighted Agent Consensus Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" integrity="sha384-3o4v8x9y2z5q6w7n8p9r0t1s2u3v4w5x6y7z8a9b0c1d2e3f4g5h6i7j8k9l0m1n2" crossorigin="anonymous"></script>
+    <style>
+        :root {
+            --bg-primary: #0a0e17;
+            --bg-secondary: #111827;
+            --bg-card: #1f2937;
+            --text-primary: #f3f4f6;
+            --text-secondary: #9ca3af;
+            --accent-primary: #3b82f6;
+            --accent-success: #10b981;
+            --accent-warning: #f59e0b;
+            --accent-danger: #ef4444;
+            --border-color: #374151;
+            --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 2rem;
+            padding-bottom: 1.5rem;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .logo-icon {
+            width: 48px;
+            height: 48px;
+            background: linear-gradient(135deg, var(--accent-primary), #8b5cf6);
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 1.5rem;
+        }
+
+        .logo-text h1 {
+            font-size: 1.75rem;
+            font-weight: 700;
+        }
+
+        .logo-text p {
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 1rem;
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: var(--accent-success);
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .status-text {
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .card {
+            background: var(--bg-card);
+            border-radius: 12px;
+            padding: 1.5rem;
+            border: 1px solid var(--border-color);
+            box-shadow: var(--shadow);
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+
+        .card-title {
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .card-value {
+            font-size: 2rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+        }
+
+        .card-subtitle {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+        }
+
+        .agent-list {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        .agent-item {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            padding: 1rem;
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+            transition: all 0.2s ease;
+        }
+
+        .agent-item:hover {
+            border-color: var(--accent-primary);
+            transform: translateX(4px);
+        }
+
+        .agent-avatar {
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--accent-primary), #8b5cf6);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 1rem;
+        }
+
+        .agent-info {
+            flex: 1;
+        }
+
+        .agent-name {
+            font-weight: 600;
+            margin-bottom: 0.25rem;
+        }
+
+        .agent-id {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            font-family: monospace;
+        }
+
+        .agent-score {
+            text-align: right;
+        }
+
+        .score-value {
+            font-size: 1.25rem;
+            font-weight: 700;
+        }
+
+        .score-label {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+        }
+
+        .score-bar {
+            height: 4px;
+            background: var(--bg-primary);
+            border-radius: 2px;
+            margin-top: 0.5rem;
+            overflow: hidden;
+        }
+
+        .score-fill {
+            height: 100%;
+            border-radius: 2px;
+            transition: width 0.3s ease;
+        }
+
+        .vote-list {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        .vote-item {
+            padding: 1rem;
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+        }
+
+        .vote-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.75rem;
+        }
+
+        .vote-id {
+            font-family: monospace;
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+        }
+
+        .vote-status {
+            padding: 0.25rem 0.75rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .vote-status.pending {
+            background: rgba(245, 158, 11, 0.2);
+            color: var(--accent-warning);
+        }
+
+        .vote-status.approved {
+            background: rgba(16, 185, 129, 0.2);
+            color: var(--accent-success);
+        }
+
+        .vote-status.rejected {
+            background: rgba(239, 68, 68, 0.2);
+            color: var(--accent-danger);
+        }
+
+        .vote-details {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+        }
+
+        .chart-container {
+            position: relative;
+            height: 300px;
+        }
+
+        .chart-container-small {
+            position: relative;
+            height: 200px;
+        }
+
+        .consensus-progress {
+            margin-top: 1rem;
+        }
+
+        .progress-bar {
+            height: 8px;
+            background: var(--bg-primary);
+            border-radius: 4px;
+            overflow: hidden;
+            margin-bottom: 0.5rem;
+        }
+
+        .progress-fill {
+            height: 100%;
+            border-radius: 4px;
+            transition: width 0.3s ease;
+        }
+
+        .progress-text {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .refresh-btn {
+            background: var(--accent-primary);
+            color: white;
+            border: none;
+            padding: 0.5rem 1rem;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.875rem;
+            font-weight: 600;
+            transition: all 0.2s ease;
+        }
+
+        .refresh-btn:hover {
+            background: #2563eb;
+            transform: translateY(-1px);
+        }
+
+        .refresh-btn:active {
+            transform: translateY(0);
+        }
+
+        .footer {
+            margin-top: 3rem;
+            padding-top: 1.5rem;
+            border-top: 1px solid var(--border-color);
+            text-align: center;
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+        }
+
+        .crypto-hash {
+            font-family: monospace;
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            word-break: break-all;
+        }
+
+        @media (max-width: 1200px) {
+            .grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+
+        @media (max-width: 768px) {
+            .grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .container {
+                padding: 1rem;
+            }
+            
+            header {
+                flex-direction: column;
+                gap: 1rem;
+                text-align: center;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="logo">
+                <div class="logo-icon">SL</div>
+                <div class="logo-text">
+                    <h1>SwarmLock</h1>
+                    <p>State-Weighted Agent Consensus Protocol</p>
+                </div>
+            </div>
+            <div class="status-indicator">
+                <div class="status-dot" id="connectionStatus"></div>
+                <span class="status-text" id="connectionText">Connected</span>
+                <button class="refresh-btn" onclick="refreshDashboard()">Refresh</button>
+            </div>
+        </header>
+
+        <div class="grid">
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Active Agents</span>
+                    <span id="agentCount">0</span>
+                </div>
+                <div class="card-value" id="totalAgents">0</div>
+                <div class="card-subtitle">Online & Verified</div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Avg Capability Score</span>
+                    <span id="avgScore">0</span>
+                </div>
+                <div class="card-value" id="avgScoreValue">0</div>
+                <div class="card-subtitle">Out of 10000</div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Pending Votes</span>
+                    <span id="pendingVotes">0</span>
+                </div>
+                <div class="card-value" id="pendingVotesValue">0</div>
+                <div class="card-subtitle">Awaiting Consensus</div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Consensus Success Rate</span>
+                    <span id="successRate">0%</span>
+                </div>
+                <div class="card-value" id="successRateValue">0%</div>
+                <div class="card-subtitle">Last 24 Hours</div>
+            </div>
+        </div>
+
+        <div class="grid">
+            <div class="card" style="grid-column: span 2;">
+                <div class="card-header">
+                    <span class="card-title">Active Agents & Capability Scores</span>
+                </div>
+                <div class="agent-list" id="agentList">
+                    <div style="text-align: center; color: var(--text-secondary); padding: 2rem;">
+                        Loading agent data...
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Voting Latency (ms)</span>
+                </div>
+                <div class="chart-container">
+                    <canvas id="latencyChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <div class="grid">
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Pending Consensus Votes</span>
+                </div>
+                <div class="vote-list" id="voteList">
+                    <div style="text-align: center; color: var(--text-secondary); padding: 2rem;">
+                        No pending votes
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Consensus Success Rate</span>
+                </div>
+                <div class="chart-container-small">
+                    <canvas id="successChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <div class="card" style="margin-top: 2rem;">
+            <div class="card-header">
+                <span class="card-title">Consensus Protocol Integrity</span>
+            </div>
+            <div style="display: flex; gap: 2rem; flex-wrap: wrap;">
+                <div style="flex: 1; min-width: 200px;">
+                    <div style="font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Protocol Version</div>
+                    <div style="font-family: monospace; font-size: 0.875rem;">swarmlock-v1</div>
+                </div>
+                <div style="flex: 1; min-width: 200px;">
+                    <div style="font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Consensus Threshold</div>
+                    <div style="font-family: monospace; font-size: 0.875rem;">66.67% (2/3 quorum)</div>
+                </div>
+                <div style="flex: 1; min-width: 200px;">
+                    <div style="font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Signature Scheme</div>
+                    <div style="font-family: monospace; font-size: 0.875rem;">ECDSA Threshold</div>
+                </div>
+                <div style="flex: 1; min-width: 200px;">
+                    <div style="font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 0.5rem;">State Verification</div>
+                    <div style="font-family: monospace; font-size: 0.875rem;">SHA-256 Hash Binding</div>
+                </div>
+            </div>
+            <div style="margin-top: 1rem;">
+                <div style="font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Contract Address</div>
+                <div class="crypto-hash" id="contractAddress">0x0000000000000000000000000000000000000000</div>
+            </div>
+        </div>
+
+        <div class="footer">
+            <p>SwarmLock State-Weighted Agent Consensus Protocol | Built for Microsoft AI Agents Hackathon</p>
+            <p style="margin-top: 0.5rem; font-size: 0.75rem;">© 2024 VARAKH BUILDER | All cryptographic operations verified on-chain</p>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = window.location.origin;
+        const CONTRACT_ADDRESS = '0x0000000000000000000000000000000000000000';
+        let latencyChart = null;
+        let successChart = null;
+        let refreshInterval = null;
+
+        async function fetchJSON(url) {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 10000);
+            
+            try {
+                const response = await fetch(url, {
+                    signal: controller.signal,
+                    headers: {
+                        'Accept': 'application/json',
+                        'Content-Type': 'application/json'
+                    }
+                });
+                clearTimeout(timeout);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                return await response.json();
+            } catch (error) {
+                clearTimeout(timeout);
+                throw error;
+            }
+        }
+
+        async function getDashboardData() {
+            try {
+                const [agents, votes, metrics] = await Promise.all([
+                    fetchJSON(`${API_BASE}/api/agents`),
+                    fetchJSON(`${API_BASE}/api/votes/pending`),
+                    fetchJSON(`${API_BASE}/api/metrics`)
+                ]);
+                
+                return { agents, votes, metrics };
+            } catch (error) {
+                console.error('Failed to fetch dashboard data:', error);
+                return null;
+            }
+        }
+
+        function updateConnectionStatus(connected) {
+            const statusDot = document.getElementById('connectionStatus');
+            const statusText = document.getElementById('connectionText');
+            
+            if (connected) {
+                statusDot.style.background = 'var(--accent-success)';
+                statusText.textContent = 'Connected';
+            } else {
+                statusDot.style.background = 'var(--accent-danger)';
+                statusText.textContent = 'Disconnected';
+            }
+        }
+
+        function renderAgentList(agents) {
+            const container = document.getElementById('agentList');
+            
+            if (!agents || agents.length === 0) {
+                container.innerHTML = '<div style="text-align: center; color: var(--text-secondary); padding: 2rem;">No active agents</div>';
+                return;
+            }
+
+            container.innerHTML = agents.map(agent => {
+                const scorePercent = (agent.capabilityScore / 10000) * 100;
+                const scoreColor = agent.capabilityScore >= 7000 ? 'var(--accent-success)' : 
+                                 agent.capabilityScore >= 4000 ? 'var(--accent-warning)' : 'var(--accent-danger)';
+                
+                return `
+                    <div class="agent-item">
+                        <div class="agent-avatar">${agent.id.slice(0, 2).toUpperCase()}</div>
+                        <div class="agent-info">
+                            <div class="agent-name">${agent.name || `Agent ${agent.id.slice(0, 8)}`}</div>
+                            <div class="agent-id">${agent.id}</div>
+                        </div>
+                        <div class="agent-score">
+                            <div class="score-value" style="color: ${scoreColor}">${agent.capabilityScore}</div>
+                            <div class="score-label">Capability Score</div>
+                            <div class="score-bar">
+                                <div class="score-fill" style="width: ${scorePercent}%; background: ${scoreColor}"></div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function renderVoteList(votes) {
+            const container = document.getElementById('voteList');
+            
+            if (!votes || votes.length === 0) {
+                container.innerHTML = '<div style="text-align: center; color: var(--text-secondary); padding: 2rem;">No pending votes</div>';
+                return;
+            }
+
+            container.innerHTML = votes.map(vote => {
+                const statusClass = vote.status.toLowerCase();
+                const statusText = vote.status;
+                
+                return `
+                    <div class="vote-item">
+                        <div class="vote-header">
+                            <span class="vote-id">${vote.intentHash.slice(0, 16)}...</span>
+                            <span class="vote-status ${statusClass}">${statusText}</span>
+                        </div>
+                        <div class="vote-details">
+                            <span>Agents: ${vote.votesReceived}/${vote.requiredVotes}</span>
+                            <span>Latency: ${vote.latencyMs}ms</span>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function updateDashboardStats(data) {
+            const { agents, votes, metrics } = data;
+            
+            document.getElementById('totalAgents').textContent = agents.length;
+            document.getElementById('agentCount').textContent = agents.length;
+            
+            const avgScore = agents.length > 0 
+                ? Math.round(agents.reduce((sum, a) => sum + a.capabilityScore, 0) / agents.length)
+                : 0;
+            document.getElementById('avgScoreValue').textContent = avgScore;
+            document.getElementById('avgScore').textContent = avgScore;
+            
+            document.getElementById('pendingVotesValue').textContent = votes.length;
+            document.getElementById('pendingVotes').textContent = votes.length;
+            
+            const successRate = metrics.successRate || 0;
+            document.getElementById('successRateValue').textContent = `${successRate}%`;
+            document.getElementById('successRate').textContent = `${successRate}%`;
+        }
+
+        function initLatencyChart() {
+            const ctx = document.getElementById('latencyChart').getContext('2d');
+            
+            latencyChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: 'Voting Latency (ms)',
+                        data: [],
+                        borderColor: '#3b82f6',
+                        backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                        borderWidth: 2,
+                        fill: true,
+                        tension: 0.4,
+                        pointRadius: 3,
+                        pointHoverRadius: 5
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: true,
+                            labels: {
+                                color: '#9ca3af',
+                                font: { size: 12 }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            display: true,
+                            grid: {
+                                color: '#374151',
+                                drawBorder: false
+                            },
+                            ticks: {
+                                color: '#9ca3af',
+                                font: { size: 10 }
+                            }
+                        },
+                        y: {
+                            display: true,
+                            grid: {
+                                color: '#374151',
+                                drawBorder: false
+                            },
+                            ticks: {
+                                color: '#9ca3af',
+                                font: { size: 10 }
+                            },
+                            beginAtZero: true
+                        }
+                    }
+                }
+            });
+        }
+
+        function initSuccessChart() {
+            const ctx = document.getElementById('successChart').getContext('2d');
+            
+            successChart = new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: ['Success', 'Failed'],
+                    datasets: [{
+                        data: [75, 25],
+                        backgroundColor: ['#10b981', '#ef4444'],
+                        borderWidth: 0,
+                        hoverOffset: 4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'bottom',
+                            labels: {
+                                color: '#9ca3af',
+                                font: { size: 12 }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function updateLatencyChart(data) {
+            if (!latencyChart) return;
+            
+            const now = new Date();
+            const timeLabel = now.toLocaleTimeString();
+            
+            latencyChart.data.labels.push(timeLabel);
+            latencyChart.data.datasets[0].data.push(data.avgLatency || 0);
+            
+            if (latencyChart.data.labels.length > 20) {
+                latencyChart.data.labels.shift();
+                latencyChart.data.datasets[0].data.shift();
+            }
+            
+            latencyChart.update();
+        }
+
+        function updateSuccessChart(data) {
+            if (!successChart) return;
+            
+            const successRate = data.successRate || 75;
+            const failRate = 100 - successRate;
+            
+            successChart.data.datasets[0].data = [successRate, failRate];
+            successChart.update();
+        }
+
+        async function refreshDashboard() {
+            try {
+                updateConnectionStatus(true);
+                const data = await getDashboardData();
+                
+                if (data) {
+                    renderAgentList(data.agents);
+                    renderVoteList(data.votes);
+                    updateDashboardStats(data);
+                    updateLatencyChart(data.metrics);
+                    updateSuccessChart(data.metrics);
+                } else {
+                    updateConnectionStatus(false);
+                }
+            } catch (error) {
+                console.error('Failed to refresh dashboard:', error);
+                updateConnectionStatus(false);
+            }
+        }
+
+        function startAutoRefresh() {
+            refreshInterval = setInterval(() => {
+                refreshDashboard();
+            }, 5000);
+        }
+
+        async function initDashboard() {
+            try {
+                initLatencyChart();
+                initSuccessChart();
+                
+                document.getElementById('contractAddress').textContent = CONTRACT_ADDRESS;
+                
+                await refreshDashboard();
+                startAutoRefresh();
+                
+                updateConnectionStatus(true);
+            } catch (error) {
+                console.error('Failed to initialize dashboard:', error);
+                updateConnectionStatus(false);
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', initDashboard);
+    </script>
+</body>
+</html>
